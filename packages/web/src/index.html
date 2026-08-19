@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  Everything the page needs ships in this folder. The policy makes that a
+  rule rather than a promise: no script, style, font or fetch may come
+  from anywhere else. 'wasm-unsafe-eval' is what WebAssembly needs, and
+  the styles are inline in this file.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; worker-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>meshchopper-stlfixer — repair STL files in the browser</title>
+<meta name="description" content="Drop an STL your slicer rejects: non-manifold edges, open edges, flipped normals. Repaired locally in your browser, nothing is uploaded.">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --panel-2: #f0f2f5;
+    --ink: #16181d;
+    --ink-dim: #5c6370;
+    --line: #dcdfe5;
+    --accent: #2f6df6;
+    /* The drop zone gets its own teal so it reads as the one thing to
+       act on, without competing with the blue buttons. */
+    --drop-line: #6ec2b4;
+    --drop-line-strong: #17a08a;
+    --drop-icon: #38b2a0;
+    --drop-bg: #f2fbf9;
+    --drop-bg-strong: #e6f6f3;
+    --drop-glow: rgba(23, 160, 138, .18);
+    --good: #1a7f4b;
+    --bad: #c23b3b;
+    --warn: #9a6b00;
+    --radius: 10px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a;
+      --panel: #1c1f25;
+      --panel-2: #23272f;
+      --ink: #e7e9ee;
+      --ink-dim: #9aa3b2;
+      --line: #2e333c;
+      --accent: #6f9dff;
+      --drop-line: #3f8d81;
+      --drop-line-strong: #4fd6bd;
+      --drop-icon: #4fd6bd;
+      --drop-bg: #17201f;
+      --drop-bg-strong: #1b2725;
+      --drop-glow: rgba(79, 214, 189, .22);
+      --good: #4ec98a;
+      --bad: #ff8080;
+      --warn: #e0b558;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 2.5rem 1.25rem 4rem;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  .topbar { display: flex; align-items: baseline; gap: 1rem; margin-bottom: .35rem; }
+  h1 { font-size: 1.6rem; margin: 0; letter-spacing: -.01em; }
+  h1 .dash { color: var(--ink-dim); font-weight: 400; }
+  .lang { margin-left: auto; }
+  .lang select {
+    font: inherit; font-size: .85rem; padding: .25rem 1.6rem .25rem .5rem;
+    color: var(--ink); background: var(--panel); border: 1px solid var(--line); border-radius: 7px;
+    appearance: none; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+    background-position: right 0.75rem center, right 0.5rem center;
+    background-size: 5px 5px, 5px 5px; background-repeat: no-repeat;
+  }
+  .lang select:hover { border-color: var(--accent); }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .tagline { color: var(--ink-dim); margin: 0 0 1.75rem; }
+  .tagline strong { color: var(--ink); font-weight: 600; }
+
+  #drop {
+    border: 2px dashed var(--drop-line);
+    border-radius: calc(var(--radius) + 4px);
+    background: var(--drop-bg);
+    padding: 2.25rem 1.5rem 2rem;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color .15s, background .15s, box-shadow .15s;
+  }
+  #drop:hover, #drop:focus-visible {
+    border-color: var(--drop-line-strong);
+    background: var(--drop-bg-strong);
+    outline: none;
+  }
+  #drop.over {
+    border-style: solid;
+    border-color: var(--drop-line-strong);
+    background: var(--drop-bg-strong);
+    box-shadow: 0 0 0 4px var(--drop-glow);
+  }
+  #drop .icon { display: block; margin: 0 auto .7rem; color: var(--drop-icon); }
+  #drop.over .icon, #drop:hover .icon { color: var(--drop-line-strong); }
+  #drop p { margin: 0; }
+  #drop .hint { color: var(--ink-dim); font-size: .875rem; margin-top: .4rem; }
+  /* Visually hidden rather than display:none, so it stays focusable and
+     reachable for keyboard users and automation. */
+  #picker { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+
+  details.options { margin: 1rem 0 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+  details.options > summary { cursor: pointer; padding: .7rem 1rem; font-size: .9rem; color: var(--ink-dim); }
+  details.options > summary:hover { color: var(--ink); }
+  details.options[open] > summary { border-bottom: 1px solid var(--line); }
+  /* One option per row: icon, what it does, its control, a "?" — so the
+     eye runs down a single column of controls instead of hunting. */
+  .opts { display: grid; grid-template-columns: 1fr; padding: .25rem 0; }
+  .opt {
+    display: grid;
+    grid-template-columns: 1.5rem minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: .3rem .8rem;
+    padding: .6rem 1rem;
+    transition: background .12s;
+  }
+  .opt + .opt { border-top: 1px solid var(--line); }
+  .opt:hover { background: var(--panel-2); }
+  .opt-icon { width: 1.5rem; height: 1.5rem; color: var(--ink-dim); }
+  .opt:hover .opt-icon { color: var(--accent); }
+  .opt-label { font-size: .9rem; cursor: pointer; }
+  .opt-control { display: flex; align-items: center; gap: .45rem; justify-self: end; min-width: 0; }
+  .opt-control .suffix { color: var(--ink-dim); font-size: .8rem; white-space: nowrap; }
+  .opt-control input[type="checkbox"] { width: 1rem; height: 1rem; accent-color: var(--accent); }
+  .help-toggle {
+    width: 1.3rem; height: 1.3rem; padding: 0; line-height: 1;
+    font: inherit; font-size: .78rem; color: var(--ink-dim); cursor: pointer;
+    background: transparent; border: 1px solid var(--line); border-radius: 50%;
+  }
+  .help-toggle:hover, .help-toggle[aria-expanded="true"] { color: var(--ink); border-color: var(--accent); }
+  .help-text {
+    grid-column: 2 / -1; margin: .15rem 0 .1rem; font-size: .82rem; line-height: 1.5;
+    color: var(--ink-dim); border-left: 2px solid var(--line); padding-left: .7rem;
+  }
+  .help-text code { font-family: var(--mono); font-size: .95em; color: var(--ink); }
+  .opts select {
+    font: inherit; font-size: .85rem; padding: .25rem .5rem; border-radius: 6px;
+    color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); cursor: pointer;
+    max-width: 100%;
+  }
+  .opt:hover select { background: var(--panel); }
+  .opts input[type="text"] {
+    width: 6.5rem; padding: .3rem .5rem; font-family: var(--mono); font-size: .85rem;
+    background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px;
+  }
+  .opt:hover input[type="text"] { background: var(--panel); }
+  .opts-foot { display: flex; justify-content: flex-end; padding: .8rem 1rem; border-top: 1px solid var(--line); }
+  .opts select {
+    font: inherit; font-size: .85rem; padding: .25rem .4rem; border-radius: 6px;
+    color: var(--ink); background: var(--panel-2); border: 1px solid var(--line); cursor: pointer;
+    /* Sizes to the longest option name unless there is no room, then it
+       shrinks or drops to the next line rather than pushing its
+       neighbour. */
+    flex: 0 1 auto; min-width: 4rem; max-width: 100%;
+  }
+  .opts input[type="text"] { flex: 1 1 5rem; min-width: 0; max-width: 100%; padding: .3rem .5rem; font-family: var(--mono); font-size: .85rem;
+    background: var(--panel-2); color: var(--ink); border: 1px solid var(--line); border-radius: 6px; }
+
+  #results { margin-top: 1.5rem; display: grid; gap: 1rem; }
+  .card { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); overflow: hidden; }
+  .card header { display: flex; align-items: baseline; gap: .6rem; padding: .85rem 1rem; border-bottom: 1px solid var(--line); }
+  .card header .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .card header .meta { color: var(--ink-dim); font-size: .8rem; font-family: var(--mono); margin-left: auto; white-space: nowrap; }
+  .rows { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem; padding: .9rem 1rem; font-size: .9rem; }
+  .rows dt { color: var(--ink-dim); font-family: var(--mono); font-size: .8rem; padding-top: .12rem; }
+  .rows dd { margin: 0; }
+  .card footer { display: flex; align-items: center; gap: .75rem; padding: .85rem 1rem; border-top: 1px solid var(--line); background: var(--panel-2); }
+  .verdict { font-weight: 600; }
+  .ok { color: var(--good); }
+  .bad { color: var(--bad); }
+  .warn { color: var(--warn); }
+  .tags { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .tag { font-family: var(--mono); font-size: .78rem; padding: .1rem .45rem; border-radius: 5px; background: var(--panel-2); border: 1px solid var(--line); }
+  .card footer .tag { background: var(--panel); }
+  .preview { border-top: 1px solid var(--line); background: var(--panel-2); }
+  .preview-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; padding: .7rem 1rem; font-size: .85rem; }
+  .preview-bar label { display: flex; align-items: center; gap: .4rem; }
+  .preview-bar .counter { color: var(--ink-dim); font-family: var(--mono); font-size: .78rem; margin-left: auto; }
+  .preview-stage { position: relative; height: 26rem; background: var(--bg); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+  .preview-stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  .preview-stage::after { content: ""; position: absolute; inset: 0 auto 0 50%; width: 1px; background: var(--line); pointer-events: none; }
+  .preview-label { position: absolute; top: .5rem; font-family: var(--mono); font-size: .75rem; color: var(--ink-dim);
+    background: color-mix(in srgb, var(--panel) 80%, transparent); padding: .1rem .4rem; border-radius: 5px; pointer-events: none; }
+  .preview-label.left { left: .6rem; }
+  .preview-label.right { left: calc(50% + .6rem); }
+  .legend { display: flex; flex-wrap: wrap; gap: .35rem 1rem; padding: .7rem 1rem; font-size: .78rem; color: var(--ink-dim); }
+  .legend i { display: inline-block; width: .7rem; height: .7rem; border-radius: 2px; margin-right: .35rem; vertical-align: -1px; }
+
+  a.button, button.button {
+    font: inherit; font-size: .9rem; font-weight: 600; text-decoration: none;
+    padding: .45rem .9rem; border-radius: 8px; border: 1px solid transparent;
+    background: var(--accent); color: #fff; cursor: pointer;
+  }
+  a.button:hover, button.button:hover { filter: brightness(1.08); }
+  .button.ghost { background: transparent; color: var(--ink); border-color: var(--line); font-weight: 500; }
+  .button.ghost:hover { border-color: var(--accent); filter: none; }
+  .button:disabled { opacity: .6; cursor: progress; }
+  .spacer { margin-left: auto; }
+
+  .note { margin-top: 2.5rem; padding: 1rem 1.15rem; border-left: 3px solid var(--line); color: var(--ink-dim); font-size: .9rem; }
+  .note strong { color: var(--ink); }
+  pre.cli { margin: .6rem 0 0; padding: .7rem .9rem; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; font-family: var(--mono); font-size: .82rem; overflow-x: auto; color: var(--ink); }
+  footer.page { margin-top: 2.5rem; color: var(--ink-dim); font-size: .85rem; }
+  footer.page a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <div class="topbar">
+    <h1>Mesh Chopper <span class="dash">-</span> STL Fixer</h1>
+    <label class="lang">
+      <span class="visually-hidden" data-i18n="lang.label">Language</span>
+      <select id="lang"></select>
+    </label>
+  </div>
+  <p class="tagline">
+    <span data-i18n="tagline.lead"></span>
+    <strong data-i18n="tagline.local"></strong><span data-i18n="tagline.rest"></span>
+  </p>
+
+  <div id="drop" tabindex="0" role="button" data-i18n-aria="drop.aria">
+    <!-- A part dropping into an open tray. Inline, like everything else
+         here: the page must not fetch anything. -->
+    <svg class="icon" width="44" height="44" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+      <path d="M24 5v22m0 0 8-8m-8 8-8-8" stroke="currentColor" stroke-width="3"
+            stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M7 29v8a5 5 0 0 0 5 5h24a5 5 0 0 0 5-5v-8" stroke="currentColor"
+            stroke-width="3" stroke-linecap="round"/>
+    </svg>
+    <p><strong data-i18n="drop.title.strong"></strong><span data-i18n="drop.title.rest"></span></p>
+    <p class="hint"><span data-i18n="drop.hint"></span> <code>name-fixed.stl</code></p>
+    <input id="picker" type="file" accept=".stl,model/stl" multiple>
+  </div>
+
+  <details class="options">
+    <summary data-i18n="options.summary"></summary>
+    <div class="opts">
+      <div class="opt" data-help="help.fill">
+        <svg class="opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="4.2" stroke-dasharray="3.3 2.6" opacity=".8"/></svg>
+        <label class="opt-label" for="fill" data-i18n="options.fill"></label>
+        <span class="opt-control"><input type="checkbox" id="fill" checked></span>
+      </div>
+      <div class="opt" data-help="help.flip">
+        <svg class="opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M5 12a7 7 0 0 1 12-4.9M19 12a7 7 0 0 1-12 4.9" stroke-linecap="round"/><path d="M17 3.5V7h-3.5M7 20.5V17h3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <label class="opt-label" for="flip" data-i18n="options.flip"></label>
+        <span class="opt-control"><input type="checkbox" id="flip" checked></span>
+      </div>
+      <div class="opt" data-help="help.largest">
+        <svg class="opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="3.5" y="7.5" width="11" height="11" rx="1.5"/><path d="M17.5 4.5h3v3m-3 9h3v-3" stroke-linecap="round" stroke-linejoin="round" opacity=".55"/></svg>
+        <label class="opt-label" for="largest" data-i18n="options.largest"></label>
+        <span class="opt-control"><input type="checkbox" id="largest"></span>
+      </div>
+      <div class="opt" data-help="help.ascii">
+        <svg class="opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><rect x="5" y="3.5" width="14" height="17" rx="2"/><path d="M8.5 8.5h7M8.5 12h7M8.5 15.5h4" stroke-linecap="round"/></svg>
+        <label class="opt-label" for="ascii" data-i18n="options.ascii"></label>
+        <span class="opt-control"><input type="checkbox" id="ascii"></span>
+      </div>
+      <div class="opt" data-help="help.manifold">
+        <svg class="opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3.2 20 7.6v8.8L12 20.8 4 16.4V7.6l8-4.4Z" stroke-linejoin="round"/><path d="m4 7.6 8 4.4 8-4.4M12 12v8.8" stroke-linejoin="round" opacity=".55"/></svg>
+        <label class="opt-label" for="manifold" data-i18n="options.manifold"></label>
+        <span class="opt-control">
+          <select id="manifold">
+            <option value="off" data-i18n="manifold.off"></option>
+            <option value="rebuild" data-i18n="manifold.rebuild"></option>
+            <option value="union" data-i18n="manifold.union"></option>
+          </select>
+        </span>
+      </div>
+      <div class="opt" data-help="help.tolerance">
+        <svg class="opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="7" cy="12" r="2.6"/><circle cx="17" cy="12" r="2.6"/><path d="M10.4 12h3.2" stroke-linecap="round" stroke-dasharray="1.2 2"/></svg>
+        <label class="opt-label" for="tolerance" data-i18n="options.tolerance"></label>
+        <span class="opt-control"><input type="text" id="tolerance" value="auto" spellcheck="false"></span>
+      </div>
+      <div class="opt" data-help="help.tiny">
+        <svg class="opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="7.5" cy="12" r="4"/><circle cx="15.5" cy="10" r="1.8" opacity=".7"/><circle cx="18.5" cy="15" r="1" opacity=".5"/></svg>
+        <label class="opt-label" for="tiny" data-i18n="options.tiny.before"></label>
+        <span class="opt-control">
+          <input type="text" id="tiny" value="0" spellcheck="false">
+          <span class="suffix" data-i18n="options.tiny.after"></span>
+        </span>
+      </div>
+    </div>
+    <div class="opts-foot">
+      <button type="button" class="button ghost" id="reset-options" data-i18n="options.reset"></button>
+    </div>
+  </details>
+
+  <div id="results"></div>
+
+  <div class="note">
+    <strong data-i18n="note.floating.title"></strong>
+    <span data-i18n="note.floating.body"></span>
+  </div>
+
+  <div class="note">
+    <strong data-i18n="note.cli.title"></strong><span data-i18n="note.cli.rest"></span>
+    <pre class="cli">npx meshchopper-stlfixer cat.stl          <span data-i18n="note.cli.comment1"></span>
+meshchopper-stlfixer models/ -r --check   <span data-i18n="note.cli.comment2"></span></pre>
+  </div>
+
+  <footer class="page">
+    <a href="https://github.com/nitrobin/meshchopper-stlfixer" data-i18n="footer.source"></a> · MIT
+  </footer>
+</main>
+<script type="module" src="./main.js"></script>
+</body>
+</html>

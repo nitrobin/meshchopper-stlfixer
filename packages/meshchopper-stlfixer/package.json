@@ -1,0 +1,54 @@
+{
+  "name": "meshchopper-stlfixer",
+  "version": "0.0.1",
+  "description": "Repair broken 3D-print meshes: STL non-manifold edges, open edges/holes, duplicate & flipped triangles. Dependency-free CLI + library, with an optional manifold3d rebuild.",
+  "keywords": [
+    "stl",
+    "3d-printing",
+    "mesh",
+    "repair",
+    "manifold",
+    "watertight",
+    "slicer",
+    "bambu",
+    "meshchopper",
+    "cli"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "meshchopper-stlfixer": "dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./manifold": {
+      "types": "./dist/manifold.d.ts",
+      "default": "./dist/manifold.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/chmod-bin.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test test/*.test.ts",
+    "clean": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\""
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20.11"
+  },
+  "optionalDependencies": {
+    "manifold-3d": "^3.5.1"
+  }
+}

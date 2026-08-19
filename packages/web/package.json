@@ -1,0 +1,22 @@
+{
+  "name": "@meshchopper-stlfixer/web",
+  "private": true,
+  "version": "0.0.1",
+  "description": "Browser front end for meshchopper-stlfixer, served from docs/ by GitHub Pages",
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/build.mjs --watch",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "manifold-3d": "^3.5.1",
+    "meshchopper-stlfixer": "*",
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "@types/three": "^0.185.4",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}
